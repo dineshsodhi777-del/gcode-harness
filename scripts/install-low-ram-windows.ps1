@@ -145,7 +145,7 @@ try {
     $launcherPath = Join-Path $InstallRoot 'RUN-GCODE.cmd'
     $launcher = @"
 @echo off
-powershell -NoProfile -ExecutionPolicy Bypass -File "$runnerPath" -GcodeExe "$exe" -- %*
+powershell -NoProfile -ExecutionPolicy Bypass -File "$runnerPath" -GcodeExe "$exe" %*
 "@
     Set-Content -Path $launcherPath -Value $launcher -Encoding ASCII
 
