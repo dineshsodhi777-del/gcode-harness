@@ -43,6 +43,8 @@ foreach ($name in $filesToBackup) {
     }
 }
 
+$panelPath = Join-Path $integrationDir 'gcode-panel.html'
+
 $runner = @"
 param()
 `$ErrorActionPreference = 'Stop'
@@ -52,7 +54,7 @@ param()
 `$env:GCODE_OPENROUTER_MODEL = 'openrouter/free'
 `$env:GCODE_NO_TELEMETRY = '1'
 `$env:DO_NOT_TRACK = '1'
-& '$($python.Source)' '$bridgePy' --gcode-exe '$gcodeExe' --allowed-root '$DineshRoot' --host 127.0.0.1 --port $BridgePort
+& '$($python.Source)' '$bridgePy' --gcode-exe '$gcodeExe' --allowed-root '$DineshRoot' --panel-file '$panelPath' --host 127.0.0.1 --port $BridgePort
 "@
 Set-Content -LiteralPath (Join-Path $integrationDir 'run-gcode-bridge.ps1') -Value $runner -Encoding UTF8
 
@@ -72,13 +74,13 @@ body{font-family:system-ui,Segoe UI,Arial,sans-serif;background:#0b1020;color:#e
 <div class="card"><strong>Result</strong><pre id="out">No task yet.</pre></div>
 </main>
 <script>
-const api='http://127.0.0.1:$BridgePort';const statusEl=document.getElementById('status');const out=document.getElementById('out');
-async function health(){try{const r=await fetch(api+'/health');const j=await r.json();statusEl.textContent=j.ok?'Bridge READY':'Bridge error';statusEl.className=j.ok?'ok':'bad'}catch(e){statusEl.textContent='Bridge OFFLINE — start run-gcode-bridge.ps1';statusEl.className='bad'}}
-async function run(){const b=document.getElementById('run');b.disabled=true;out.textContent='Working...';try{const r=await fetch(api+'/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:document.getElementById('msg').value,cwd:document.getElementById('cwd').value,mode:document.getElementById('mode').value,task_type:document.getElementById('type').value})});const j=await r.json();if(j.ok&&j.result){out.textContent=typeof j.result==='string'?j.result:(j.result.text||JSON.stringify(j.result,null,2))}else{out.textContent=JSON.stringify(j,null,2)}}catch(e){out.textContent='ERROR: '+e.message}finally{b.disabled=false;health()}}
+const api='';const statusEl=document.getElementById('status');const out=document.getElementById('out');
+async function health(){try{const r=await fetch('/health',{cache:'no-store'});const j=await r.json();statusEl.textContent=j.ok?'Bridge READY':'Bridge error';statusEl.className=j.ok?'ok':'bad'}catch(e){statusEl.textContent='Bridge OFFLINE';statusEl.className='bad'}}
+async function run(){const b=document.getElementById('run');b.disabled=true;out.textContent='Working...';try{const r=await fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:document.getElementById('msg').value,cwd:document.getElementById('cwd').value,mode:document.getElementById('mode').value,task_type:document.getElementById('type').value})});const j=await r.json();if(j.ok&&j.result){out.textContent=typeof j.result==='string'?j.result:(j.result.text||JSON.stringify(j.result,null,2))}else{out.textContent=JSON.stringify(j,null,2)}}catch(e){out.textContent='ERROR: '+e.message}finally{b.disabled=false;health()}}
 document.getElementById('run').addEventListener('click',run);health();setInterval(health,15000);
 </script></body></html>
 "@
-Set-Content -LiteralPath (Join-Path $integrationDir 'gcode-panel.html') -Value $panel -Encoding UTF8
+Set-Content -LiteralPath $panelPath -Value $panel -Encoding UTF8
 
 $readme = @"
 Dinesh OS <-> Gcode Integration
@@ -86,12 +88,13 @@ Dinesh OS <-> Gcode Integration
 1. Start bridge:
    powershell -NoProfile -ExecutionPolicy Bypass -File "$integrationDir\run-gcode-bridge.ps1"
 2. Open panel:
-   $integrationDir\gcode-panel.html
+   http://127.0.0.1:$BridgePort/
 3. Bridge health:
    http://127.0.0.1:$BridgePort/health
 
 Safety:
 - localhost only (127.0.0.1)
+- panel served from same localhost origin
 - OpenRouter openrouter/free only
 - paid-provider fallback blocked by Gcode core
 - telemetry disabled
@@ -105,12 +108,13 @@ $startCmd = @"
 @echo off
 start "Dinesh Gcode Bridge" powershell -NoProfile -ExecutionPolicy Bypass -File "$integrationDir\run-gcode-bridge.ps1"
 timeout /t 2 /nobreak >nul
-start "" "$integrationDir\gcode-panel.html"
+start "" "http://127.0.0.1:$BridgePort/"
 "@
 Set-Content -LiteralPath (Join-Path $DineshRoot 'START-GCODE-WORKER.cmd') -Value $startCmd -Encoding ASCII
 
 Info "Integration installed: $integrationDir"
 Info "Backup: $backupRoot"
 Info "One-click launcher: $DineshRoot\START-GCODE-WORKER.cmd"
+Info "Panel URL: http://127.0.0.1:$BridgePort/"
 Info 'No existing Dinesh OS source files were overwritten.'
-Info 'PASS: bridge files created.'
+Info 'PASS: same-origin bridge files created.'
