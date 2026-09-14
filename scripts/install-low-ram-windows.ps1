@@ -132,23 +132,33 @@ try {
     & $exe --version
     if ($LASTEXITCODE -ne 0) { Stop-Safely 'Built gcode.exe failed the --version smoke test.' }
 
+    $runnerPath = Join-Path $InstallRoot 'scripts\run-free-only-windows.ps1'
+    if (-not (Test-Path $runnerPath)) {
+        Stop-Safely "FREE-ONLY runner was not found at: $runnerPath"
+    }
+
+    # Persistent privacy opt-out. The launcher also sets environment variables on every run.
+    $gcodeHome = if ($env:GCODE_HOME) { $env:GCODE_HOME } else { Join-Path $env:USERPROFILE '.gcode' }
+    New-Item -ItemType Directory -Path $gcodeHome -Force | Out-Null
+    New-Item -ItemType File -Path (Join-Path $gcodeHome 'no_telemetry') -Force | Out-Null
+
     $launcherPath = Join-Path $InstallRoot 'RUN-GCODE.cmd'
     $launcher = @"
 @echo off
-cd /d "$InstallRoot"
-"$exe" %*
+powershell -NoProfile -ExecutionPolicy Bypass -File "$runnerPath" -GcodeExe "$exe" -- %*
 "@
     Set-Content -Path $launcherPath -Value $launcher -Encoding ASCII
 
     Write-Info 'SUCCESS'
     Write-Host "Launcher: $launcherPath" -ForegroundColor Green
-    Write-Host 'Run it by double-clicking RUN-GCODE.cmd or from PowerShell:' -ForegroundColor Green
-    Write-Host "  & '$launcherPath'" -ForegroundColor Green
+    Write-Host 'Permanent safety policy:' -ForegroundColor Green
+    Write-Host '  - OpenRouter provider locked to openrouter/free' -ForegroundColor Green
+    Write-Host '  - Telemetry disabled on every launch' -ForegroundColor Green
+    Write-Host '  - Existing stale gcode server cleared before launch' -ForegroundColor Green
+    Write-Host '  - Provider/model overrides rejected by this launcher' -ForegroundColor Green
     Write-Host ''
-    Write-Host 'First use:' -ForegroundColor Yellow
-    Write-Host '  1. Start RUN-GCODE.cmd'
-    Write-Host '  2. Select/configure only a model provider you are authorized to use.'
-    Write-Host '  3. Keep one active heavy task at a time on low-RAM PCs.'
+    Write-Host 'Run:' -ForegroundColor Yellow
+    Write-Host "  & '$launcherPath'"
 } finally {
     Pop-Location
 }
