@@ -46,12 +46,36 @@ fn configure_system_allocator() {
 #[cfg(not(all(target_os = "linux", not(feature = "jemalloc"))))]
 fn configure_system_allocator() {}
 
-fn main() -> Result<()> {
-    configure_system_allocator();
-
+fn run_gcode() -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
 
     runtime.block_on(async { gcode::run().await })
+}
+
+fn main() -> Result<()> {
+    configure_system_allocator();
+
+    #[cfg(target_os = "windows")]
+    {
+        // Windows' default main-thread stack is smaller than the stack available
+        // on some other platforms. The CLI startup graph can exceed that limit in
+        // debug builds, so run the application on a dedicated 8 MiB stack.
+        // Stack reservation is virtual; physical memory is committed on demand.
+        let handle = std::thread::Builder::new()
+            .name("gcode-main".to_string())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(run_gcode)?;
+
+        match handle.join() {
+            Ok(result) => result,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        run_gcode()
+    }
 }
