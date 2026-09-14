@@ -23,10 +23,7 @@ if (-not (Test-Path -LiteralPath $targetExe -PathType Leaf)) {
     Stop-Safely "gcode.exe was not found: $targetExe"
 }
 
-# CMD/PowerShell wrappers may supply a standalone -- separator. It is not forwarded.
 $forwardArgs = @($GcodeArgs | Where-Object { $_ -and $_ -ne '--' })
-
-# FREE-ONLY means callers cannot override the provider/model through this launcher.
 $blockedArgs = @('--provider', '-p', '--model', '-m', '--provider-profile')
 foreach ($arg in $forwardArgs) {
     $argName = ($arg -split '=', 2)[0].ToLowerInvariant()
@@ -35,9 +32,14 @@ foreach ($arg in $forwardArgs) {
     }
 }
 
-# Disable telemetry in both the child environment and the persistent gcode opt-out file.
+# Privacy + hard FREE_ONLY policy. The Rust request dispatcher reads GCODE_FREE_ONLY
+# immediately before every model request, so restored session state cannot bypass it.
 $env:GCODE_NO_TELEMETRY = '1'
 $env:DO_NOT_TRACK = '1'
+$env:GCODE_FREE_ONLY = '1'
+$env:GCODE_ACTIVE_PROVIDER = 'openrouter'
+$env:GCODE_FORCE_PROVIDER = '1'
+$env:GCODE_OPENROUTER_MODEL = 'openrouter/free'
 
 $gcodeHome = if ($env:GCODE_HOME) {
     $env:GCODE_HOME
@@ -54,10 +56,6 @@ try {
     Stop-Safely "Could not enforce the persistent telemetry opt-out: $($_.Exception.Message)"
 }
 
-# Gcode uses a shared background server. A server left from an older session can keep
-# its old model and ignore new --provider/--model startup flags. On this low-RAM,
-# single-session launcher we stop only processes using this exact gcode.exe, then
-# start one fresh FREE-ONLY server. Other Gcode installations are left untouched.
 try {
     $targetNormalized = $targetExe.ToLowerInvariant()
     $existing = @(
@@ -71,8 +69,6 @@ try {
         try {
             Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
         } catch {
-            # A process may have exited between enumeration and Stop-Process. Only fail
-            # closed if the process is still present.
             if (Get-Process -Id $process.ProcessId -ErrorAction SilentlyContinue) {
                 throw
             }
@@ -86,6 +82,8 @@ try {
 }
 
 Write-Host '[gcode-safe] FREE-ONLY: OpenRouter openrouter/free' -ForegroundColor Green
+Write-Host '[gcode-safe] Core request guard: ON' -ForegroundColor Green
+Write-Host '[gcode-safe] Paid-provider fallback: BLOCKED' -ForegroundColor Green
 Write-Host '[gcode-safe] Telemetry: OFF' -ForegroundColor Green
 Write-Host '[gcode-safe] Stale server for this Gcode binary: cleared before launch' -ForegroundColor Green
 
