@@ -98,6 +98,17 @@ try {
     cargo --version
     if ($LASTEXITCODE -ne 0) { Stop-Safely 'cargo is not working correctly.' }
 
+    $lockPath = Join-Path $InstallRoot 'Cargo.lock'
+    if (-not (Test-Path $lockPath)) {
+        Write-Info 'Generating a local Cargo.lock for this installation...'
+        cargo generate-lockfile
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $lockPath)) {
+            Stop-Safely 'Could not generate Cargo.lock. No build was started.'
+        }
+    } else {
+        Write-Info 'Using the existing local Cargo.lock.'
+    }
+
     Write-Info 'Running a single-job compile check for the gcode binary...'
     cargo check --locked --bin gcode -j 1
     if ($LASTEXITCODE -ne 0) { Stop-Safely 'cargo check failed. No launcher was created.' }
