@@ -108,3 +108,5 @@ Release process and packaging notes are in [RELEASING.md](RELEASING.md).
 ## License
 
 Released under the [MIT License](LICENSE).
+
+<!-- ci-verification-trigger: 2026-09-14 -->
