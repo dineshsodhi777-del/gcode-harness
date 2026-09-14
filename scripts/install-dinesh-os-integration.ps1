@@ -93,7 +93,9 @@ Start-Process -FilePath 'powershell.exe' -ArgumentList @(
 "@
 Set-Content -LiteralPath $restartPath -Value $restart -Encoding UTF8
 
-$panel = @"
+# Keep the HTML/JavaScript literal. A double-quoted PowerShell here-string would
+# interpret JavaScript template expressions such as ${r} as PowerShell variables.
+$panel = @'
 <!doctype html>
 <html lang="en">
 <head>
@@ -105,7 +107,7 @@ body{font-family:system-ui,Segoe UI,Arial,sans-serif;background:#0b1020;color:#e
 </head>
 <body><main>
 <div class="card"><h1>Gcode AI Worker</h1><div id="status" class="muted">Checking bridge...</div><div class="statusline"><span class="pill">FREE_ONLY</span><span class="pill">OpenRouter openrouter/free</span><span class="pill">localhost only</span><span class="pill">telemetry off</span></div></div>
-<div class="card"><div class="row"><select id="type"><option value="general">General</option><option value="website">Website</option><option value="coding">Coding</option><option value="research">Research</option><option value="content">Content</option><option value="audit">Audit</option></select><select id="mode"><option value="work">Safe Work</option><option value="read_only">Read Only</option></select></div><p></p><input id="cwd" value="$DineshRoot" aria-label="Working directory"><p></p><textarea id="msg" placeholder="What should Gcode do?"></textarea><p></p><div class="row"><button id="run">Run Task</button><button id="cancel" class="danger hidden">Cancel Task</button></div></div>
+<div class="card"><div class="row"><select id="type"><option value="general">General</option><option value="website">Website</option><option value="coding">Coding</option><option value="research">Research</option><option value="content">Content</option><option value="audit">Audit</option></select><select id="mode"><option value="work">Safe Work</option><option value="read_only">Read Only</option></select></div><p></p><input id="cwd" value="__DINESH_ROOT__" aria-label="Working directory"><p></p><textarea id="msg" placeholder="What should Gcode do?"></textarea><p></p><div class="row"><button id="run">Run Task</button><button id="cancel" class="danger hidden">Cancel Task</button></div></div>
 <div class="card"><strong>Task status</strong><div id="job" class="muted">No task running.</div><div id="elapsed" class="muted"></div></div>
 <div class="card"><strong>Result</strong><pre id="out">No task yet.</pre></div>
 </main>
@@ -124,7 +126,8 @@ async function run(){const message=document.getElementById('msg').value.trim();i
 async function cancel(){if(!currentJobId)return;cancelBtn.disabled=true;jobEl.textContent='Cancelling task...';try{const r=await fetch('/jobs/'+encodeURIComponent(currentJobId)+'/cancel',{method:'POST'}),j=await r.json();if(!r.ok&&!j.ok)throw new Error(j.error||'Cancel failed');out.textContent='Cancellation requested. Waiting for worker to stop safely...';startPolling()}catch(e){cancelBtn.disabled=false;out.textContent='ERROR: '+e.message}}
 runBtn.addEventListener('click',run);cancelBtn.addEventListener('click',cancel);health();setInterval(health,15000);
 </script></body></html>
-"@
+'@
+$panel = $panel.Replace('__DINESH_ROOT__', [System.Net.WebUtility]::HtmlEncode($DineshRoot))
 Set-Content -LiteralPath $panelPath -Value $panel -Encoding UTF8
 
 $readme = @"
