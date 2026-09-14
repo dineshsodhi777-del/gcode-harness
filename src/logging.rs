@@ -289,7 +289,8 @@ pub fn log_path() -> Option<PathBuf> {
     Some(log_dir.join(format!("gcode-{}.log", date)))
 }
 
-/// Clean up old logs (keep last 7 days)
+/// Clean up old log files (keep last 7 days).
+/// Directories and other non-file entries are intentionally ignored.
 pub fn cleanup_old_logs() {
     if let Some(log_dir) = log_dir()
         && let Ok(entries) = fs::read_dir(&log_dir)
@@ -297,6 +298,7 @@ pub fn cleanup_old_logs() {
         let cutoff = Local::now() - chrono::Duration::days(7);
         for entry in entries.flatten() {
             if let Ok(metadata) = entry.metadata()
+                && metadata.is_file()
                 && let Ok(modified) = metadata.modified()
             {
                 let modified: chrono::DateTime<Local> = modified.into();
