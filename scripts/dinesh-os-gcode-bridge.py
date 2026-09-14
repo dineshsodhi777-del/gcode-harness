@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Local-only Dinesh OS -> Gcode bridge.
 
-Zero third-party dependencies. Binds only to 127.0.0.1 and invokes Gcode's
-non-interactive `run --json` command with fail-closed FREE_ONLY environment
-settings.
+Zero third-party dependencies. Binds only to 127.0.0.1, serves the worker panel
+from the same origin, and invokes Gcode's non-interactive `run --json` command
+with fail-closed FREE_ONLY environment settings.
 """
 
 from __future__ import annotations
@@ -27,7 +27,6 @@ ALLOWED_ORIGINS = {
     "http://127.0.0.1:8855",
     "http://localhost:8855",
 }
-
 RUN_LOCK = threading.BoundedSemaphore(1)
 
 
@@ -79,11 +78,13 @@ class BridgeServer(ThreadingHTTPServer):
         *,
         gcode_exe: Path,
         allowed_roots: list[Path],
+        panel_file: Path,
         timeout_seconds: int,
     ) -> None:
         super().__init__(server_address, handler_cls)
         self.gcode_exe = gcode_exe
         self.allowed_roots = allowed_roots
+        self.panel_file = panel_file
         self.timeout_seconds = timeout_seconds
 
 
@@ -116,6 +117,21 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_panel(self) -> None:
+        try:
+            body = self.server.panel_file.read_bytes()
+        except OSError as exc:
+            self._send_json(500, {"ok": False, "error": f"Panel file unavailable: {exc}"})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_OPTIONS(self) -> None:
         if not self._origin_allowed():
             self._send_json(403, {"ok": False, "error": "Origin not allowed"})
@@ -128,7 +144,11 @@ class Handler(BaseHTTPRequestHandler):
         if not self._origin_allowed():
             self._send_json(403, {"ok": False, "error": "Origin not allowed"})
             return
-        if self.path.rstrip("/") == "/health":
+        clean = self.path.split("?", 1)[0].rstrip("/")
+        if clean in {"", "/index.html"}:
+            self._send_panel()
+            return
+        if clean == "/health":
             self._send_json(
                 200,
                 {
@@ -139,7 +159,7 @@ class Handler(BaseHTTPRequestHandler):
                     "model": "openrouter/free",
                     "free_only": True,
                     "telemetry": "off",
-                    "busy": RUN_LOCK._value == 0,  # status only; admission still uses semaphore
+                    "busy": RUN_LOCK._value == 0,
                     "allowed_roots": [str(root) for root in self.server.allowed_roots],
                 },
             )
@@ -150,20 +170,18 @@ class Handler(BaseHTTPRequestHandler):
         if not self._origin_allowed():
             self._send_json(403, {"ok": False, "error": "Origin not allowed"})
             return
-        if self.path.rstrip("/") != "/run":
+        if self.path.split("?", 1)[0].rstrip("/") != "/run":
             self._send_json(404, {"ok": False, "error": "Not found"})
             return
 
-        content_length = self.headers.get("Content-Length")
         try:
-            length = int(content_length or "0")
+            length = int(self.headers.get("Content-Length") or "0")
         except ValueError:
             self._send_json(400, {"ok": False, "error": "Invalid Content-Length"})
             return
         if length <= 0 or length > MAX_BODY_BYTES:
             self._send_json(413, {"ok": False, "error": "Request body is empty or too large"})
             return
-
         try:
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
         except Exception:
@@ -188,15 +206,11 @@ class Handler(BaseHTTPRequestHandler):
             task_type = "general"
 
         requested_cwd = str(payload.get("cwd", "")).strip()
-        if requested_cwd:
-            try:
-                cwd = Path(requested_cwd).expanduser().resolve()
-            except OSError:
-                self._send_json(400, {"ok": False, "error": "Invalid working directory"})
-                return
-        else:
-            cwd = self.server.allowed_roots[0]
-
+        try:
+            cwd = Path(requested_cwd).expanduser().resolve() if requested_cwd else self.server.allowed_roots[0]
+        except OSError:
+            self._send_json(400, {"ok": False, "error": "Invalid working directory"})
+            return
         if not cwd.is_dir() or not any(_is_within(cwd, root) for root in self.server.allowed_roots):
             self._send_json(403, {"ok": False, "error": "Working directory is outside allowed roots"})
             return
@@ -220,77 +234,46 @@ class Handler(BaseHTTPRequestHandler):
                     "GCODE_RUN_AUTO_POKE_MAX_TURNS": "6",
                 }
             )
-
             guarded_message = _task_guard(mode, task_type) + "\n\nUSER_TASK:\n" + message
             command = [
-                str(self.server.gcode_exe),
-                "--no-update",
-                "--no-selfdev",
-                "--quiet",
-                "--provider",
-                "openrouter",
-                "--model",
-                "openrouter/free",
-                "-C",
-                str(cwd),
-                "run",
-                "--json",
-                guarded_message,
+                str(self.server.gcode_exe), "--no-update", "--no-selfdev", "--quiet",
+                "--provider", "openrouter", "--model", "openrouter/free", "-C", str(cwd),
+                "run", "--json", guarded_message,
             ]
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
             completed = subprocess.run(
                 command,
-                cwd=str(cwd),
-                env=env,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=self.server.timeout_seconds,
-                shell=False,
-                creationflags=creationflags,
+                cwd=str(cwd), env=env, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=self.server.timeout_seconds,
+                shell=False, creationflags=creationflags,
             )
             duration_ms = int((time.monotonic() - started) * 1000)
             stdout = completed.stdout.strip()
             stderr = completed.stderr.strip()
-            parsed: Any = None
-            if stdout:
-                try:
-                    parsed = json.loads(stdout)
-                except json.JSONDecodeError:
-                    parsed = None
+            try:
+                parsed: Any = json.loads(stdout) if stdout else None
+            except json.JSONDecodeError:
+                parsed = None
 
             if completed.returncode == 0:
-                self._send_json(
-                    200,
-                    {
-                        "ok": True,
-                        "duration_ms": duration_ms,
-                        "cwd": str(cwd),
-                        "provider": "openrouter",
-                        "model": "openrouter/free",
-                        "result": parsed if parsed is not None else stdout,
-                        "stderr": stderr,
-                    },
-                )
+                self._send_json(200, {
+                    "ok": True,
+                    "duration_ms": duration_ms,
+                    "cwd": str(cwd),
+                    "provider": "openrouter",
+                    "model": "openrouter/free",
+                    "result": parsed if parsed is not None else stdout,
+                    "stderr": stderr,
+                })
             else:
-                self._send_json(
-                    502,
-                    {
-                        "ok": False,
-                        "duration_ms": duration_ms,
-                        "exit_code": completed.returncode,
-                        "error": stderr or stdout or "Gcode run failed",
-                    },
-                )
-        except subprocess.TimeoutExpired:
-            self._send_json(
-                504,
-                {
+                self._send_json(502, {
                     "ok": False,
-                    "error": f"Task exceeded {self.server.timeout_seconds} seconds and was stopped",
-                },
-            )
+                    "duration_ms": duration_ms,
+                    "exit_code": completed.returncode,
+                    "error": stderr or stdout or "Gcode run failed",
+                })
+        except subprocess.TimeoutExpired:
+            self._send_json(504, {"ok": False, "error": f"Task exceeded {self.server.timeout_seconds} seconds and was stopped"})
         except Exception as exc:
             self._send_json(500, {"ok": False, "error": f"Bridge error: {exc}"})
         finally:
@@ -301,6 +284,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Local Dinesh OS to Gcode bridge")
     parser.add_argument("--gcode-exe", required=True)
     parser.add_argument("--allowed-root", action="append", required=True)
+    parser.add_argument("--panel-file", required=True)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8855)
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_SECONDS)
@@ -313,8 +297,11 @@ def main() -> int:
         raise SystemExit("Refusing non-local bind. Use 127.0.0.1 only.")
 
     gcode_exe = Path(args.gcode_exe).expanduser().resolve()
+    panel_file = Path(args.panel_file).expanduser().resolve()
     if not gcode_exe.is_file():
         raise SystemExit(f"gcode.exe not found: {gcode_exe}")
+    if not panel_file.is_file():
+        raise SystemExit(f"Panel file not found: {panel_file}")
 
     allowed_roots: list[Path] = []
     for raw in args.allowed_root:
@@ -324,17 +311,16 @@ def main() -> int:
         allowed_roots.append(root)
 
     server = BridgeServer(
-        ("127.0.0.1", args.port),
-        Handler,
+        ("127.0.0.1", args.port), Handler,
         gcode_exe=gcode_exe,
         allowed_roots=allowed_roots,
+        panel_file=panel_file,
         timeout_seconds=max(30, args.timeout),
     )
-    print(f"[dinesh-gcode-bridge] READY http://127.0.0.1:{args.port}")
-    print("[dinesh-gcode-bridge] FREE_ONLY=openrouter/free | telemetry=off | local-only")
-    print("[dinesh-gcode-bridge] Allowed roots:")
+    print(f"[dinesh-gcode-bridge] READY http://127.0.0.1:{args.port}/")
+    print("[dinesh-gcode-bridge] FREE_ONLY=openrouter/free | telemetry=off | local-only | same-origin-panel=on")
     for root in allowed_roots:
-        print(f"  - {root}")
+        print(f"[dinesh-gcode-bridge] Allowed root: {root}")
     try:
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
