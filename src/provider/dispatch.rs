@@ -1,5 +1,23 @@
 use super::*;
 
+const FREE_ONLY_OPENROUTER_MODEL: &str = "openrouter/free";
+
+fn free_only_mode_enabled() -> bool {
+    std::env::var("GCODE_FREE_ONLY")
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn free_only_provider_allowed(provider: ActiveProvider) -> bool {
+    matches!(provider, ActiveProvider::OpenRouter)
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum CompletionMode<'a> {
     Unified {
@@ -28,6 +46,38 @@ impl CompletionMode<'_> {
 }
 
 impl MultiProvider {
+    fn enforce_free_only_request(&self, provider: ActiveProvider) -> Result<()> {
+        if !free_only_mode_enabled() {
+            return Ok(());
+        }
+
+        if !free_only_provider_allowed(provider) {
+            anyhow::bail!(
+                "FREE_ONLY_MODE blocked provider '{}'. Only OpenRouter model '{}' is allowed.",
+                Self::provider_label(provider),
+                FREE_ONLY_OPENROUTER_MODEL
+            );
+        }
+
+        self.reconcile_auth_if_provider_missing(ActiveProvider::OpenRouter);
+        let Some(openrouter) = self.openrouter_provider() else {
+            anyhow::bail!(
+                "FREE_ONLY_MODE requires OpenRouter credentials. No paid provider fallback is allowed."
+            );
+        };
+
+        if openrouter.model() != FREE_ONLY_OPENROUTER_MODEL {
+            crate::logging::warn(&format!(
+                "FREE_ONLY_MODE corrected OpenRouter model '{}' -> '{}' before request",
+                openrouter.model(),
+                FREE_ONLY_OPENROUTER_MODEL
+            ));
+            openrouter.set_model(FREE_ONLY_OPENROUTER_MODEL)?;
+        }
+
+        Ok(())
+    }
+
     pub(super) fn estimate_request_input(
         messages: &[Message],
         tools: &[ToolDefinition],
@@ -62,6 +112,7 @@ impl MultiProvider {
         system: &str,
         resume_session_id: Option<&str>,
     ) -> Result<EventStream> {
+        self.enforce_free_only_request(provider)?;
         self.reconcile_auth_if_provider_missing(provider);
         match provider {
             ActiveProvider::Claude => {
@@ -178,6 +229,7 @@ impl MultiProvider {
         system_dynamic: &str,
         resume_session_id: Option<&str>,
     ) -> Result<EventStream> {
+        self.enforce_free_only_request(provider)?;
         self.reconcile_auth_if_provider_missing(provider);
         match provider {
             ActiveProvider::Claude => {
@@ -331,5 +383,21 @@ impl MultiProvider {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod free_only_tests {
+    use super::*;
+
+    #[test]
+    fn free_only_allows_openrouter_and_blocks_other_providers() {
+        assert!(free_only_provider_allowed(ActiveProvider::OpenRouter));
+        assert!(!free_only_provider_allowed(ActiveProvider::Claude));
+        assert!(!free_only_provider_allowed(ActiveProvider::OpenAI));
+        assert!(!free_only_provider_allowed(ActiveProvider::Copilot));
+        assert!(!free_only_provider_allowed(ActiveProvider::Antigravity));
+        assert!(!free_only_provider_allowed(ActiveProvider::Gemini));
+        assert!(!free_only_provider_allowed(ActiveProvider::Cursor));
     }
 }
