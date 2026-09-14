@@ -31,6 +31,7 @@ if ($env:OS -ne 'Windows_NT') {
 
 Require-Command 'git' 'Install Git for Windows from the official Git website, then re-run this script.'
 Require-Command 'cargo' 'Install the official Rust toolchain with rustup, then re-run this script.'
+Require-Command 'rustc' 'Install the official Rust toolchain with rustup, then re-run this script.'
 
 if (-not $InstallRoot) {
     if (Test-Path 'E:\') {
@@ -98,6 +99,9 @@ try {
     cargo --version
     if ($LASTEXITCODE -ne 0) { Stop-Safely 'cargo is not working correctly.' }
 
+    $rustcInfo = (rustc -vV | Out-String)
+    if ($LASTEXITCODE -ne 0) { Stop-Safely 'rustc is not working correctly.' }
+
     $lockPath = Join-Path $InstallRoot 'Cargo.lock'
     if (-not (Test-Path $lockPath)) {
         Write-Info 'Generating a local Cargo.lock for this installation...'
@@ -114,9 +118,23 @@ try {
     if ($LASTEXITCODE -ne 0) { Stop-Safely 'cargo check failed. No launcher was created.' }
 
     $profile = if ($ReleaseBuild) { 'release' } else { 'debug' }
-    $buildArgs = @('build', '--locked', '--bin', 'gcode', '-j', '1')
+    $buildArgs = @('rustc', '--locked', '--bin', 'gcode', '-j', '1')
     if ($ReleaseBuild) {
         $buildArgs += '--release'
+    }
+
+    # The gcode CLI has a large startup/argument graph. Windows main-thread stacks
+    # are smaller than typical Linux defaults, and debug builds can overflow them.
+    # Increase only the final executable's reserved stack; this does not increase
+    # steady-state RAM usage unless that stack is actually touched.
+    if ($rustcInfo -match 'host:\s+.*windows-msvc') {
+        Write-Info 'Using an 8 MB Windows executable stack (MSVC) for runtime stability...'
+        $buildArgs += @('--', '-C', 'link-arg=/STACK:8388608')
+    } elseif ($rustcInfo -match 'host:\s+.*windows-gnu') {
+        Write-Info 'Using an 8 MB Windows executable stack (GNU) for runtime stability...'
+        $buildArgs += @('--', '-C', 'link-arg=-Wl,--stack,8388608')
+    } else {
+        Stop-Safely 'Unsupported Rust Windows host. Expected windows-msvc or windows-gnu.'
     }
 
     Write-Info "Building gcode ($profile, one job to reduce RAM pressure)..."
